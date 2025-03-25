@@ -573,4 +573,366 @@ class FaceAIService {
       throw Exception('Yedek model hatası');
     }
   }
+
+  // Etnik stil dönüşümü oluşturma metodu
+  Future<String> generateEthnicStyle(String userPhotoPath, String gender, String ethnicStyle) async {
+    try {
+      // API anahtarını .env dosyasından oku
+      final apiKey = dotenv.env['HF_API_KEY'] ?? '';
+      if (apiKey.isEmpty) {
+        throw Exception('API key not found. Please check the .env file.');
+      }
+      
+      print('Generating ethnic style: $ethnicStyle for $gender');
+      
+      // Kullanıcının fiziksel özelliklerini analiz et
+      Map<String, String> userFeatures = await _analyzeUserFeatures(userPhotoPath);
+      
+      print('Detected user features: $userFeatures');
+      
+      try {
+        // Ana modelle dene
+        return await _generateEthnicWithMainModel(apiKey, gender, ethnicStyle, userFeatures);
+      } catch (mainModelError) {
+        print('Main model error: $mainModelError, trying alternative model...');
+        
+        // Alternatif modelle dene
+        try {
+          return await _generateEthnicWithAlternativeModel(apiKey, gender, ethnicStyle, userFeatures);
+        } catch (alternativeModelError) {
+          print('Alternative model error: $alternativeModelError, trying backup model...');
+          
+          // Yedek modelle dene
+          return await _generateEthnicWithBackupModel(apiKey, gender, ethnicStyle, userFeatures);
+        }
+      }
+    } catch (e) {
+      print('Error in generateEthnicStyle: $e');
+      throw Exception('Failed to generate ethnic style: $e');
+    }
+  }
+
+  // Kullanıcının fiziksel özelliklerini analiz et
+  Future<Map<String, String>> _analyzeUserFeatures(String userPhotoPath) async {
+    Map<String, String> features = {
+      'skinTone': 'medium',
+      'hairColor': 'brown',
+      'eyeColor': 'brown',
+      'facialHair': 'none',
+    };
+    
+    try {
+      // Resmi yükle
+      File imageFile = File(userPhotoPath);
+      final imageBytes = await imageFile.readAsBytes();
+      final image = img.decodeImage(imageBytes);
+      
+      if (image != null) {
+        // Ten rengi analizi
+        final brightness = _extractFaceBrightness(image);
+        if (brightness > 170) features['skinTone'] = 'very light';
+        else if (brightness > 150) features['skinTone'] = 'light';
+        else if (brightness > 120) features['skinTone'] = 'medium light';
+        else if (brightness > 90) features['skinTone'] = 'medium';
+        else if (brightness > 70) features['skinTone'] = 'tan';
+        else if (brightness > 50) features['skinTone'] = 'medium dark';
+        else features['skinTone'] = 'dark';
+        
+        // Dominant renkler analizi
+        List<Color> dominantColors = _extractDominantColors(image);
+        if (dominantColors.isNotEmpty) {
+          // Saç rengi tahmini (genellikle daha koyu renk)
+          Color? estimatedHairColor = _findDarkestColor(dominantColors);
+          if (estimatedHairColor != null) {
+            features['hairColor'] = _getColorDescription(estimatedHairColor);
+          }
+          
+          // Göz rengi tahmini
+          if (dominantColors.length > 1) {
+            Color? estimatedEyeColor = dominantColors[1]; // İkinci dominant renk genellikle göz rengidir
+            if (estimatedEyeColor != null) {
+              String eyeColorDesc = _getColorDescription(estimatedEyeColor);
+              // Göz rengi için daha spesifik tanımlar
+              if (eyeColorDesc.contains('blue')) features['eyeColor'] = 'blue';
+              else if (eyeColorDesc.contains('green')) features['eyeColor'] = 'green';
+              else if (eyeColorDesc.contains('brown')) features['eyeColor'] = 'brown';
+              else if (eyeColorDesc.contains('hazel')) features['eyeColor'] = 'hazel';
+              else if (eyeColorDesc.contains('gray')) features['eyeColor'] = 'gray';
+              else features['eyeColor'] = 'brown'; // Varsayılan
+            }
+          }
+          
+          // Sakal analizi için basit tahmin - tamamen kesin olması zor
+          // Gerçek uygulamada yüz tanıma veya daha gelişmiş görüntü işleme kullanılmalıdır
+          bool hasDarkPixelsInChinArea = _checkForDarkPixelsInChinArea(image);
+          features['facialHair'] = hasDarkPixelsInChinArea ? 'beard' : 'none';
+        }
+      }
+    } catch (e) {
+      print('Error analyzing user features: $e');
+    }
+    
+    return features;
+  }
+
+  // Çene bölgesinde koyu pikseller var mı kontrol et (basit sakal tahmini)
+  bool _checkForDarkPixelsInChinArea(img.Image image) {
+    try {
+      // Görüntünün alt yarısında ve orta bölgesinde koyu piksel sayısını hesapla
+      int darkPixelCount = 0;
+      int totalPixels = 0;
+      
+      int startY = (image.height * 0.6).toInt(); // Alt yarı
+      int startX = (image.width * 0.3).toInt(); // Orta bölge
+      int endX = (image.width * 0.7).toInt();
+      
+      for (int y = startY; y < image.height; y++) {
+        for (int x = startX; x < endX; x++) {
+          final pixel = image.getPixel(x, y);
+          final r = pixel.r.toInt();
+          final g = pixel.g.toInt();
+          final b = pixel.b.toInt();
+          
+          // Pikselin parlaklığını hesapla
+          final brightness = (r + g + b) / 3;
+          
+          // Koyu piksel olarak kabul et
+          if (brightness < 80) {
+            darkPixelCount++;
+          }
+          totalPixels++;
+        }
+      }
+      
+      // Koyu piksellerin oranı belirli bir eşiği geçerse sakal var olarak kabul et
+      return totalPixels > 0 && (darkPixelCount / totalPixels) > 0.2;
+    } catch (e) {
+      print('Error checking for facial hair: $e');
+      return false;
+    }
+  }
+
+  // Bir dizi renk içinde en koyu olanı bul
+  Color? _findDarkestColor(List<Color> colors) {
+    if (colors.isEmpty) return null;
+    
+    Color darkestColor = colors[0];
+    double darkestBrightness = _calculateBrightness(darkestColor);
+    
+    for (int i = 1; i < colors.length; i++) {
+      double brightness = _calculateBrightness(colors[i]);
+      if (brightness < darkestBrightness) {
+        darkestBrightness = brightness;
+        darkestColor = colors[i];
+      }
+    }
+    
+    return darkestColor;
+  }
+
+  // Renk parlaklığını hesapla
+  double _calculateBrightness(Color color) {
+    return (color.red * 0.299 + color.green * 0.587 + color.blue * 0.114) / 255;
+  }
+
+  // Ana modelle etnik stil oluştur
+  Future<String> _generateEthnicWithMainModel(String apiKey, String gender, String ethnicStyle, Map<String, String> userFeatures) async {
+    final modelUrl = 'https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0';
+    final prompt = _buildEthnicPrompt(ethnicStyle, gender, userFeatures);
+    final negativePrompt = _buildEthnicNegativePrompt();
+    
+    // API'yi çağır
+    final response = await http.post(
+      Uri.parse(modelUrl),
+      headers: {
+        'Authorization': 'Bearer $apiKey',
+        'Content-Type': 'application/json'
+      },
+      body: jsonEncode({
+        "inputs": prompt,
+        "parameters": {
+          "negative_prompt": negativePrompt,
+          "num_inference_steps": 50,
+          "guidance_scale": 8.5,
+          "width": 768,
+          "height": 768,
+          "seed": math.Random().nextInt(2147483647)
+        }
+      }),
+    );
+    
+    print('API response status code: ${response.statusCode}');
+    
+    if (response.statusCode == 200) {
+      // Başarılı yanıt, byte dizisini al
+      final resultBytes = response.bodyBytes;
+      
+      // Geçici dosya oluştur
+      final tempDir = await getTemporaryDirectory();
+      final imagePath = '${tempDir.path}/ethnic_style_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      
+      // Sonucu kaydet
+      await File(imagePath).writeAsBytes(resultBytes);
+      print('Ethnic style image created: $imagePath');
+      return imagePath;
+    } else {
+      // Hata durumunu logla
+      print('API Error: ${response.statusCode}, ${response.body}');
+      throw Exception('API Error: ${response.statusCode}');
+    }
+  }
+
+  // Alternatif modelle etnik stil oluştur
+  Future<String> _generateEthnicWithAlternativeModel(String apiKey, String gender, String ethnicStyle, Map<String, String> userFeatures) async {
+    final modelUrl = 'https://api-inference.huggingface.co/models/SG161222/Realistic_Vision_V5.0';
+    final prompt = _buildEthnicPrompt(ethnicStyle, gender, userFeatures);
+    final negativePrompt = _buildEthnicNegativePrompt();
+    
+    // API'yi çağır
+    final response = await http.post(
+      Uri.parse(modelUrl),
+      headers: {
+        'Authorization': 'Bearer $apiKey',
+        'Content-Type': 'application/json'
+      },
+      body: jsonEncode({
+        "inputs": prompt,
+        "parameters": {
+          "negative_prompt": negativePrompt,
+          "num_inference_steps": 45,
+          "guidance_scale": 7.5,
+          "width": 768,
+          "height": 768,
+          "seed": math.Random().nextInt(2147483647)
+        }
+      }),
+    );
+    
+    print('Alternative API response status code: ${response.statusCode}');
+    
+    if (response.statusCode == 200) {
+      // Başarılı yanıt, byte dizisini al
+      final resultBytes = response.bodyBytes;
+      
+      // Geçici dosya oluştur
+      final tempDir = await getTemporaryDirectory();
+      final imagePath = '${tempDir.path}/ethnic_style_alt_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      
+      // Sonucu kaydet
+      await File(imagePath).writeAsBytes(resultBytes);
+      print('Alternative ethnic style image created: $imagePath');
+      return imagePath;
+    } else {
+      // Hata durumunu logla
+      print('API Error: ${response.statusCode}, ${response.body}');
+      throw Exception('API Error: ${response.statusCode}');
+    }
+  }
+
+  // Yedek modelle etnik stil oluştur
+  Future<String> _generateEthnicWithBackupModel(String apiKey, String gender, String ethnicStyle, Map<String, String> userFeatures) async {
+    final modelUrl = 'https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5';
+    final prompt = _buildEthnicPrompt(ethnicStyle, gender, userFeatures);
+    final negativePrompt = _buildEthnicNegativePrompt();
+    
+    // API'yi çağır
+    final response = await http.post(
+      Uri.parse(modelUrl),
+      headers: {
+        'Authorization': 'Bearer $apiKey',
+        'Content-Type': 'application/json'
+      },
+      body: jsonEncode({
+        "inputs": prompt,
+        "parameters": {
+          "negative_prompt": negativePrompt,
+          "num_inference_steps": 40,
+          "guidance_scale": 7.5,
+          "width": 512,
+          "height": 512,
+          "seed": math.Random().nextInt(2147483647)
+        }
+      }),
+    );
+    
+    print('Backup API response status code: ${response.statusCode}');
+    
+    if (response.statusCode == 200) {
+      // Başarılı yanıt, byte dizisini al
+      final resultBytes = response.bodyBytes;
+      
+      // Geçici dosya oluştur
+      final tempDir = await getTemporaryDirectory();
+      final imagePath = '${tempDir.path}/ethnic_style_backup_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      
+      // Sonucu kaydet
+      await File(imagePath).writeAsBytes(resultBytes);
+      print('Backup ethnic style image created: $imagePath');
+      return imagePath;
+    } else {
+      // Hata durumunu logla
+      print('API Error: ${response.statusCode}, ${response.body}');
+      throw Exception('API Error: ${response.statusCode}');
+    }
+  }
+
+  // Etnik stil prompt'u oluştur - kullanıcının özelliklerini koruyarak
+  String _buildEthnicPrompt(String ethnicStyle, String gender, Map<String, String> userFeatures) {
+    final String personType = gender == 'male' ? "man" : "woman";
+    final String skinTone = userFeatures['skinTone'] ?? 'medium';
+    final String hairColor = userFeatures['hairColor'] ?? 'brown';
+    final String eyeColor = userFeatures['eyeColor'] ?? 'brown';
+    final String facialHair = userFeatures['facialHair'] ?? 'none';
+    final String facialHairText = (gender == 'male' && facialHair == 'beard') ? 'with beard' : '';
+    
+    Map<String, String> styleSpecifics = {
+      'African': 'traditional African clothing with intricate patterns and vibrant colors, kente cloth, ankara fabric, cultural accessories',
+      'Indian': 'traditional Indian ${gender == "male" ? "kurta pajama with turban" : "saree with intricate gold embroidery"}, ornate jewelry, cultural setting',
+      'Japanese': 'traditional Japanese ${gender == "male" ? "kimono with hakama" : "kimono with obi"}, tatami mat background, cherry blossoms',
+      'Middle Eastern': 'traditional Middle Eastern ${gender == "male" ? "thobe and keffiyeh" : "abaya with intricate embroidery"}, ornate accessories',
+      'Native American': 'traditional Native American ${gender == "male" ? "regalia" : "dress with turquoise jewelry"}, cultural patterns',
+      'Nordic': 'traditional Nordic folk costume, ${gender == "male" ? "embroidered vest" : "embroidered dress with bonnet"}, nordic setting',
+      'South American': 'traditional South American ${gender == "male" ? "poncho" : "colorful folkloric dress"}, vibrant textile patterns',
+      'Thai': 'traditional Thai ${gender == "male" ? "silk shirt and pants" : "silk dress with sabai"}, ornate headdress, thai setting',
+    };
+    
+    // Etnik kökenin yüz özelliklerini belirten özel ayarlamalar
+    Map<String, String> faceAdjustments = {
+      'Japanese': 'with slightly almond-shaped eyes', 
+      'Middle Eastern': 'with defined facial features',
+      'Native American': 'with high cheekbones',
+      'African': '',
+      'Indian': '',
+      'Nordic': '',
+      'South American': '',
+      'Thai': 'with subtle Asian features',
+    };
+    
+    String styleDetails = styleSpecifics[ethnicStyle] ?? 'traditional ethnic clothing with cultural patterns and accessories';
+    String faceAdjustment = faceAdjustments[ethnicStyle] ?? '';
+    
+    // Kullanıcının özellikleri + seçilen etnik stilin minimal yüz özellikleri
+    return '''
+    ultra-realistic portrait photograph of a $skinTone skin $personType with $hairColor hair and $eyeColor eyes $facialHairText $faceAdjustment,
+    wearing $styleDetails,
+    preserved original face structure, features, and coloring, 
+    shot with Sony Alpha 7R IV camera at f/2.8 aperture, 85mm lens, ISO 100, 1/125 sec shutter speed,
+    professional studio lighting with soft key light and fill light, cultural studio backdrop, 
+    high-end fashion photography, 8k resolution, photorealistic, centered framing,
+    detailed facial features, rich colors, accurate skin tone, perfect likeness,
+    clear detailed photo, head and shoulders portrait
+    ''';
+  }
+
+  // Etnik stil negatif prompt'u oluştur - daha güçlü cilt rengi kontrolü
+  String _buildEthnicNegativePrompt() {
+    return '''
+    cartoon, animation, illustration, drawing, painting, sketch, anime, 
+    distorted features, unrealistic, low quality, blurry, noise,
+    multiple people, deformed proportions, bad anatomy, different face,
+    changed skin tone, changed eye color, changed hair color, 
+    extra limbs, disfigured, oversaturated, over-exposed,
+    poor likeness, missing resemblance
+    ''';
+  }
 } 

@@ -4,6 +4,7 @@ import '../services/storage_service.dart';
 import '../services/face_ai_service.dart';
 import '../components/photo_tips_dialog.dart';
 import 'package:baby_face_ai/views/result_screen.dart';
+import 'ethnic_style_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -54,6 +55,16 @@ class _HomeScreenState extends State<HomeScreen> {
     showDialog(
       context: context,
       builder: (context) => const PhotoTipsDialog(),
+    );
+  }
+
+  // Etnik Stil ekranına git
+  void _navigateToEthnicStyle() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const EthnicStyleScreen(),
+      ),
     );
   }
 
@@ -291,6 +302,59 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ),
                     ),
+                    
+                    const SizedBox(height: 30),
+                    const Divider(),
+                    const SizedBox(height: 10),
+                    
+                    // Etnik Stil Özelliği
+                    Card(
+                      elevation: 3,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(Icons.style, color: Colors.purple, size: 24),
+                                SizedBox(width: 10),
+                                Text(
+                                  'Try Our New Feature!',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.purple,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            const Text(
+                              'See yourself in traditional ethnic clothing from around the world. Upload a photo and choose from various cultural styles!',
+                              style: TextStyle(fontSize: 15),
+                            ),
+                            const SizedBox(height: 15),
+                            OutlinedButton.icon(
+                              onPressed: _navigateToEthnicStyle,
+                              icon: const Icon(Icons.explore),
+                              label: const Text('Explore Ethnic Styles'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.purple,
+                                side: const BorderSide(color: Colors.purple),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 12,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    
                     const SizedBox(height: 20),
                     const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 20),
